@@ -1,3 +1,6 @@
 imagecorruptions
 scikit-learn
 scipy
+fastapi
+uvicorn[standard]
+python-multipart
