@@ -125,3 +125,6 @@ mmrotate/.mim
 
 # checkpoints 
 checkpoints/
+
+# vscode
+.vscode/
