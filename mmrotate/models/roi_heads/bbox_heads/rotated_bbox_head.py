@@ -58,6 +58,7 @@ class RotatedBBoxHead(BaseModule):
                      loss_weight=1.0),
                  loss_bbox=dict(
                      type='SmoothL1Loss', beta=1.0, loss_weight=1.0),
+                 loss_distill=None,
                  init_cfg=None):
         super(RotatedBBoxHead, self).__init__(init_cfg)
         assert with_cls or with_reg
@@ -77,6 +78,7 @@ class RotatedBBoxHead(BaseModule):
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
+        self.loss_distill = build_loss(loss_distill) if loss_distill else None
 
         in_channels = self.in_channels
         if self.with_avg_pool:
@@ -280,7 +282,8 @@ class RotatedBBoxHead(BaseModule):
              label_weights,
              bbox_targets,
              bbox_weights,
-             reduction_override=None):
+             reduction_override=None,
+             teacher_cls_score=None):
         """Loss function.
 
         Args:
@@ -324,6 +327,17 @@ class RotatedBBoxHead(BaseModule):
                     losses.update(acc_)
                 else:
                     losses['acc'] = accuracy(cls_score, labels)
+                # Distillation loss (only classification logits)
+                if self.loss_distill is not None and teacher_cls_score is not None:
+                    # Align shapes if teacher sampled fewer RoIs (simple truncation to min length)
+                    if teacher_cls_score.size(0) != cls_score.size(0):
+                        min_n = min(teacher_cls_score.size(0), cls_score.size(0))
+                        t_logits = teacher_cls_score[:min_n]
+                        s_logits = cls_score[:min_n]
+                    else:
+                        t_logits = teacher_cls_score
+                        s_logits = cls_score
+                    losses['loss_distill'] = self.loss_distill(s_logits, t_logits)
         if bbox_pred is not None:
             bg_class_ind = self.num_classes
             # 0~self.num_classes-1 are FG, self.num_classes is BG

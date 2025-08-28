@@ -35,7 +35,8 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
                       gt_bboxes,
                       gt_labels,
                       gt_bboxes_ignore=None,
-                      gt_masks=None):
+                      gt_masks=None,
+                      teacher_cls_score=None):
         """
         Args:
             x (list[Tensor]): list of multi-level img features.
@@ -89,13 +90,14 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
         if self.with_bbox:
             bbox_results = self._bbox_forward_train(x, sampling_results,
                                                     gt_bboxes, gt_labels,
-                                                    img_metas)
+                                                    img_metas,
+                                                    teacher_cls_score=teacher_cls_score)
             losses.update(bbox_results['loss_bbox'])
 
         return losses
 
     def _bbox_forward_train(self, x, sampling_results, gt_bboxes, gt_labels,
-                            img_metas):
+                            img_metas, teacher_cls_score=None):
         """Run forward function and calculate loss for box head in training.
 
         Args:
@@ -113,13 +115,12 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
         """
         rois = rbbox2roi([res.bboxes for res in sampling_results])
         bbox_results = self._bbox_forward(x, rois)
-
         bbox_targets = self.bbox_head.get_targets(sampling_results, gt_bboxes,
                                                   gt_labels, self.train_cfg)
         loss_bbox = self.bbox_head.loss(bbox_results['cls_score'],
                                         bbox_results['bbox_pred'], rois,
-                                        *bbox_targets)
-
+                                        *bbox_targets,
+                                        teacher_cls_score=teacher_cls_score)
         bbox_results.update(loss_bbox=loss_bbox)
         return bbox_results
 
