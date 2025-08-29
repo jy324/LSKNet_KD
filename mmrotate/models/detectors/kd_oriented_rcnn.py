@@ -1,12 +1,16 @@
 from ..builder import ROTATED_DETECTORS, build_backbone, build_head, build_neck
-from .two_stage import TwoStageDetector
+from .two_stage import RotatedTwoStageDetector
 import torch
 from mmcv.runner import load_checkpoint, _load_checkpoint, load_state_dict
 from .. import builder
+import threading
 
+# 全局缓存，避免重复初始化
+_teacher_model_cache = {}
+_lock = threading.Lock()
 
 @ROTATED_DETECTORS.register_module()
-class KDOrientedRCNN(TwoStageDetector):
+class KDOrientedRCNN(RotatedTwoStageDetector):
     """Knowledge distillation for Oriented R-CNN."""
 
     def __init__(self,
@@ -16,18 +20,25 @@ class KDOrientedRCNN(TwoStageDetector):
                  train_cfg=None,
                  test_cfg=None):
         super(KDOrientedRCNN, self).__init__(
-            backbone=student.backbone,
-            neck=student.neck,
-            rpn_head=student.rpn_head,
-            roi_head=student.roi_head,
-            train_cfg=train_cfg,
-            test_cfg=test_cfg,
-            init_cfg=student.init_cfg)
+            backbone=student['backbone'],
+            neck=student['neck'],
+            rpn_head=student['rpn_head'],
+            roi_head=student['roi_head'],
+            train_cfg=student['train_cfg'],
+            test_cfg=student['test_cfg'],
+            init_cfg=getattr(student, "init_cfg", None))
 
-        # Build teacher model
-        self.teacher_model = self.build_teacher(teacher_config, teacher_ckpt)
+        # 使用缓存的教师模型，避免重复初始化
+        cache_key = f"{teacher_ckpt}_{id(teacher_config)}"
+        with _lock:
+            if cache_key not in _teacher_model_cache:
+                print(f"首次初始化教师模型: {teacher_ckpt}")
+                _teacher_model_cache[cache_key] = self.build_teacher(teacher_config, teacher_ckpt)
+            else:
+                print(f"使用缓存的教师模型: {teacher_ckpt}")
+            self.teacher_model = _teacher_model_cache[cache_key]
         
-        # The student model is the main model in TwoStageDetector
+        # The student model is the main model in RotatedTwoStageDetector
         self.student_model = self
 
     def build_teacher(self, config, ckpt):
@@ -35,6 +46,9 @@ class KDOrientedRCNN(TwoStageDetector):
         teacher = builder.build_detector(config)
         load_checkpoint(teacher, ckpt, map_location='cpu')
         teacher.eval()
+        # 冻结教师模型参数
+        for param in teacher.parameters():
+            param.requires_grad = False
         return teacher
 
     def forward_train(self,
@@ -75,6 +89,7 @@ class KDOrientedRCNN(TwoStageDetector):
             dict[str, Tensor]: a dictionary of loss components
         """
         # Teacher forward
+        teacher_cls_score = None
         with torch.no_grad():
             teacher_x = self.teacher_model.extract_feat(img)
             teacher_proposal_list = self.teacher_model.rpn_head.simple_test_rpn(
@@ -85,7 +100,7 @@ class KDOrientedRCNN(TwoStageDetector):
             sampling_results = []
             for i in range(len(img_metas)):
                 assign_result = self.student_model.roi_head.bbox_assigner.assign(
-                    teacher_proposal_list[i], gt_bboxes[i], gt_bboxes_ignore[i],
+                    teacher_proposal_list[i], gt_bboxes[i], gt_bboxes_ignore[i] if gt_bboxes_ignore else None,
                     gt_labels[i])
                 sampling_result = self.student_model.roi_head.bbox_sampler.sample(
                     assign_result,
@@ -95,12 +110,11 @@ class KDOrientedRCNN(TwoStageDetector):
                     feats=[lvl_feat[i][None] for lvl_feat in teacher_x])
                 sampling_results.append(sampling_result)
 
-            teacher_rois = builder.build_assigner(self.train_cfg.rcnn.assigner).assign(teacher_proposal_list, gt_bboxes, gt_bboxes_ignore, gt_labels)
-            teacher_rois = builder.build_sampler(self.train_cfg.rcnn.sampler).sample(teacher_rois, teacher_proposal_list, gt_bboxes, gt_labels)
-            teacher_roi_feats = self.teacher_model.roi_head.bbox_roi_extractor(
-                teacher_x[:self.teacher_model.roi_head.bbox_roi_extractor.num_inputs],
-                torch.cat([res.pos_bboxes for res in sampling_results]))
-            teacher_cls_score, _ = self.teacher_model.roi_head.bbox_head(teacher_roi_feats)
+            if len(sampling_results) > 0 and len(sampling_results[0].pos_bboxes) > 0:
+                teacher_roi_feats = self.teacher_model.roi_head.bbox_roi_extractor(
+                    teacher_x[:self.teacher_model.roi_head.bbox_roi_extractor.num_inputs],
+                    torch.cat([res.pos_bboxes for res in sampling_results]))
+                teacher_cls_score, _ = self.teacher_model.roi_head.bbox_head(teacher_roi_feats)
 
 
         # Student forward
@@ -152,4 +166,3 @@ class KDOrientedRCNN(TwoStageDetector):
     @property
     def with_roi_head(self):
         return self.student_model.with_roi_head
-"""

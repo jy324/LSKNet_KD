@@ -2,6 +2,7 @@
 from .base import RotatedBaseDetector
 from .gliding_vertex import GlidingVertex
 from .oriented_rcnn import OrientedRCNN
+from .kd_oriented_rcnn import KDOrientedRCNN
 from .r3det import R3Det
 from .redet import ReDet
 from .roi_transformer import RoITransformer
@@ -15,7 +16,7 @@ from .two_stage import RotatedTwoStageDetector
 from .strip_rcnn import StripRCNN
 
 __all__ = [
-    'RotatedRetinaNet', 'RotatedFasterRCNN', 'OrientedRCNN', 'RoITransformer',
+    'RotatedRetinaNet', 'RotatedFasterRCNN', 'OrientedRCNN', 'KDOrientedRCNN', 'RoITransformer',
     'GlidingVertex', 'ReDet', 'R3Det', 'S2ANet', 'RotatedRepPoints',
     'RotatedBaseDetector', 'RotatedTwoStageDetector',
     'RotatedSingleStageDetector', 'RotatedFCOS','StripRCNN'

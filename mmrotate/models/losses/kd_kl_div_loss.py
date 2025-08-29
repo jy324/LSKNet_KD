@@ -1,8 +1,8 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..builder import LOSSES
-from .utils import weighted_loss
+from ..builder import ROTATED_LOSSES
+from mmdet.models.losses.utils import weighted_loss
 
 
 @weighted_loss
@@ -30,7 +30,7 @@ def knowledge_distillation_kl_div_loss(pred,
     return F.kl_div(log_p, q, reduction='sum') * (T**2) / pred.size(0)
 
 
-@LOSSES.register_module()
+@ROTATED_LOSSES.register_module(force=True)
 class KnowledgeDistillationKLDivLoss(nn.Module):
     """Loss function for knowledge distilling using KL divergence.
 
@@ -82,4 +82,3 @@ class KnowledgeDistillationKLDivLoss(nn.Module):
             self.T,
             detach_target=self.detach_target)
         return loss_kd
-"""
