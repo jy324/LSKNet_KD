@@ -16,7 +16,7 @@ from .two_stage import RotatedTwoStageDetector
 from .strip_rcnn import StripRCNN
 
 __all__ = [
-    'RotatedRetinaNet', 'RotatedFasterRCNN', 'OrientedRCNN', 'RoITransformer',
+    'RotatedRetinaNet', 'RotatedFasterRCNN', 'OrientedRCNN', 'KDOrientedRCNN', 'RoITransformer',
     'GlidingVertex', 'ReDet', 'R3Det', 'S2ANet', 'RotatedRepPoints',
     'RotatedBaseDetector', 'RotatedTwoStageDetector',
     'RotatedSingleStageDetector', 'RotatedFCOS','StripRCNN', 'KDOrientedRCNN'

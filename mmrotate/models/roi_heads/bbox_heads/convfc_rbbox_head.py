@@ -210,7 +210,7 @@ class RotatedConvFCBBoxHead(RotatedBBoxHead):
 class RotatedShared2FCBBoxHead(RotatedConvFCBBoxHead):
     """Shared2FC RBBox head."""
 
-    def __init__(self, fc_out_channels=1024, *args, **kwargs):
+    def __init__(self, fc_out_channels=1024, loss_distill=None, *args, **kwargs):
         super(RotatedShared2FCBBoxHead, self).__init__(
             num_shared_convs=0,
             num_shared_fcs=2,
@@ -221,13 +221,14 @@ class RotatedShared2FCBBoxHead(RotatedConvFCBBoxHead):
             fc_out_channels=fc_out_channels,
             *args,
             **kwargs)
+        self.loss_distill = loss_distill
 
 
 @ROTATED_HEADS.register_module()
 class RotatedKFIoUShared2FCBBoxHead(RotatedConvFCBBoxHead):
     """KFIoU RoI head."""
 
-    def __init__(self, fc_out_channels=1024, *args, **kwargs):
+    def __init__(self, fc_out_channels=1024, loss_distill=None, *args, **kwargs):
         super(RotatedKFIoUShared2FCBBoxHead, self).__init__(
             num_shared_convs=0,
             num_shared_fcs=2,
