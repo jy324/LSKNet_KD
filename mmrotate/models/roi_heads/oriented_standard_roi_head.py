@@ -106,8 +106,8 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
                     kd_loss = torch.nn.functional.kl_div(student_log_prob, teacher_prob, reduction='batchmean')
                     losses['loss_kd_cls'] = kd_loss * kd_weight
                 else:
-                    # Shape mismatch; skip KD to avoid crash
-                    pass
+                    # 即便形状不匹配也写入一个 0 的占位项，保证所有 rank 至少有 'loss_kd_cls'
+                    losses['loss_kd_cls'] = student_cls.sum() * 0
 
         return losses
 

@@ -226,19 +226,45 @@ def print_layer_analysis(analysis_result: Dict[str, Any], top_n: int = 10):
 
     return top_layerNames
 
-# Pruning function
 def random_prune_layer(model: nn.Module, targetLayerNames: list, amount: float = 0.25, observe: bool = False):
     """
-    随机剪枝指定层的参数
+    随机非结构化剪枝指定层的参数。
+    这个过程分为两步：
+    1. 应用剪枝（应用掩码）：PyTorch 会在模块上添加一个名为 'weight_mask' 的缓冲区。
+       此时，原始权重被保存为 'weight_orig'，而 'weight' 属性会动态地由 'weight_orig' 和 'weight_mask' 相乘得到。
+       这使得权重在逻辑上被置零，但原始值依然保留，方便后续进行微调（fine-tuning）。
+    2. 固化剪枝：调用 prune.remove()，将掩码移除，并将权重张量永久性地替换为剪枝后的稀疏张量（即真实置零）。
+       这会使模型变小，但也会失去后续微调的能力。
     """
     res_model = deepcopy(model)
+    print("--- 开始随机非结构化剪枝 ---")
     for name, module in res_model.named_modules():
-        if name in targetLayerNames and isinstance(module, nn.Conv2d):
-            org_params = deepcopy(module.weight.size())
-            prune.random_unstructured(module, name='weight', amount=amount)  # 随机剪枝25%参数
+        if name in targetLayerNames and isinstance(module, (nn.Conv2d, nn.Linear)):
             if observe:
-                print(f"剪枝前 {name} 参数量: {org_params}, 剪枝后: {module.weight.size()}")
-    print("随机剪枝完成！")
+                print(f"\n[层: {name}]")
+                print(f"  - 剪枝前，权重形状: {module.weight.size()}")
+                print(f"  - 'weight_mask' 存在吗? {'weight_mask' in dict(module.named_buffers())}")
+
+            # 1. 应用剪枝（应用掩码）
+            prune.random_unstructured(module, name='weight', amount=amount)
+            
+            if observe:
+                # 经过 prune 后，module.weight 已经是被 mask 的结果
+                non_zero_after_mask = torch.count_nonzero(module.weight)
+                total_params = module.weight.nelement()
+                print(f"  - 应用掩码后，权重形状: {module.weight.size()}")
+                print(f"  - 'weight_mask' 存在吗? {'weight_mask' in dict(module.named_buffers())}")
+                print(f"  - 掩码后非零参数: {non_zero_after_mask} / {total_params} (稀疏度: {1 - non_zero_after_mask/total_params:.2%})")
+
+            # 2. 固化剪枝（移除掩码，永久置零）
+            # 在推理部署前，通常需要执行此步骤
+            prune.remove(module, 'weight')
+
+            if observe:
+                print(f"  - 固化剪枝后，'weight_mask' 存在吗? {'weight_mask' in dict(module.named_buffers())}")
+                print(f"  - 最终权重中非零参数: {torch.count_nonzero(module.weight)}")
+
+    print("\n--- 随机剪枝完成！---")
     return res_model
 
 def structured_prune_layer(model: nn.Module, targetLayerNames: List[str], amount: float = 0.25, observe: bool = False,
@@ -434,14 +460,14 @@ def structured_prune_layer(model: nn.Module, targetLayerNames: List[str], amount
 
 def _parse_args():
     parser = argparse.ArgumentParser(description='LSKNet 预训练权重剪枝脚本 (main-prune)')
-    parser.add_argument('--checkpoint', type=str, default='././data/pretrained/lsk_s_backbone.pth',
+    parser.add_argument('--checkpoint', type=str, default='./data/pretrained/lsk_s_backbone.pth',
                         help='预训练 backbone 权重路径 (state_dict)')
     parser.add_argument('--img-size', type=int, default=1024, help='输入图像尺寸 (方形)')
     parser.add_argument('--amount', type=float, default=0.5, help='剪枝比例 (0~1) 针对选中层输出通道')
     parser.add_argument('--topk', type=int, default=10, help='按参数量排序选取前 K 个可安全层进行尝试剪枝')
-    parser.add_argument('--mode', type=str, default='structured', choices=['structured', 'random'], help='剪枝方式')
+    parser.add_argument('--mode', type=str, default='structured', choices=['structured', 'random', 'random_structured'], help='剪枝方式')
     parser.add_argument('--seed', type=int, default=42, help='随机种子 (结构化随机保留通道)')
-    parser.add_argument('--output', type=str, default='././data/pretrained/lsk_s_backbone_pruned.pth', help='输出剪枝后权重保存路径')
+    parser.add_argument('--output', type=str, default='./data/pretrained/lsk_s_backbone_pruned.pth', help='输出剪枝后权重保存路径')
     parser.add_argument('--save-metadata', action='store_true', help='同时保存剪枝元数据 JSON')
     parser.add_argument('--no-summary', action='store_true', help='不打印模型结构 summary (可加速)')
     parser.add_argument('--dry-run', action='store_true', help='仅分析不实际剪枝/保存')
@@ -494,23 +520,27 @@ def _run_cli():
         return
 
     original_params = analysis['total_parameters']
+    pruned_model = None
+    summary_param_type = "模型总参数量"
 
     if args.mode == 'structured':
         print(f'执行结构化剪枝: amount={args.amount}')
         pruned_model = structured_prune_layer(model, top_layer_names, amount=args.amount, observe=True, seed=args.seed)
-    else:
+        pruned_params = sum(p.numel() for p in pruned_model.parameters())
+    else: # 'random' or other unstructured methods
         print(f'执行随机非结构化剪枝: amount={args.amount}')
         pruned_model = random_prune_layer(model, top_layer_names, amount=args.amount, observe=True)
-        _remove_pruning_reparam(pruned_model)  # 清理 reparam 方便下游加载
+        # 对于非结构化剪枝，我们统计非零参数作为有效参数量
+        pruned_params = sum(torch.count_nonzero(p) for p in pruned_model.parameters())
+        summary_param_type = "模型非零参数量"
 
-    pruned_params = sum(p.numel() for p in pruned_model.parameters())
     pruning_ratio = (1 - pruned_params / original_params) * 100
 
     print('\n' + '=' * 80)
     print('剪枝效果总结')
     print('-' * 80)
     print(f'原始模型总参数量: {original_params:,}')
-    print(f'剪枝后模型总参数量: {pruned_params:,}')
+    print(f'剪枝后{summary_param_type}: {pruned_params:,}')
     print(f'参数量压缩比例: {pruning_ratio:.2f}%')
     print('=' * 80 + '\n')
 
