@@ -2,54 +2,40 @@ from ..builder import ROTATED_DETECTORS, build_backbone, build_head, build_neck
 from .two_stage import RotatedTwoStageDetector
 import torch
 from mmcv.runner import load_checkpoint, _load_checkpoint, load_state_dict
-from .. import builder
+from .. import build_detector
 import threading
-
-# 全局缓存，避免重复初始化
-_teacher_model_cache = {}
-_lock = threading.Lock()
+import torch.distributed as dist
+import mmcv
+from mmrotate.core import rbbox2roi  # Added for converting bboxes to rois (batch_index + box)
 
 @ROTATED_DETECTORS.register_module()
 class KDOrientedRCNN(RotatedTwoStageDetector):
     """Knowledge distillation for Oriented R-CNN."""
 
     def __init__(self,
+                 backbone,
+                 neck,
+                 rpn_head,
+                 roi_head,
                  teacher_config,
-                 teacher_ckpt,
-                 student,
+                 output_feature=False,
+                 teacher_ckpt=None,
+                 eval_teacher=True,
                  train_cfg=None,
-                 test_cfg=None):
-        super(KDOrientedRCNN, self).__init__(
-            backbone=student['backbone'],
-            neck=student['neck'],
-            rpn_head=student['rpn_head'],
-            roi_head=student['roi_head'],
-            train_cfg=student['train_cfg'],
-            test_cfg=student['test_cfg'],
-            init_cfg=getattr(student, "init_cfg", None))
+                 test_cfg=None,
+                 pretrained=None):
+        super().__init__(backbone, neck, rpn_head, roi_head, train_cfg, test_cfg,
+                         pretrained)
+        self.eval_teacher = eval_teacher
+        self.output_feature = output_feature
+        # Build teacher model
+        if isinstance(teacher_config, str):
+            teacher_config = mmcv.Config.fromfile(teacher_config)
+        self.teacher_model = build_detector(teacher_config['model'])
+        if teacher_ckpt is not None:
+            load_checkpoint(
+                self.teacher_model, teacher_ckpt, map_location='cpu')
 
-        # 使用缓存的教师模型，避免重复初始化
-        cache_key = f"{teacher_ckpt}_{id(teacher_config)}"
-        with _lock:
-            if cache_key not in _teacher_model_cache:
-                print(f"首次初始化教师模型: {teacher_ckpt}")
-                _teacher_model_cache[cache_key] = self.build_teacher(teacher_config, teacher_ckpt)
-            else:
-                print(f"使用缓存的教师模型: {teacher_ckpt}")
-            self.teacher_model = _teacher_model_cache[cache_key]
-        
-        # The student model is the main model in RotatedTwoStageDetector
-        self.student_model = self
-
-    def build_teacher(self, config, ckpt):
-        """Build teacher model."""
-        teacher = builder.build_detector(config)
-        load_checkpoint(teacher, ckpt, map_location='cpu')
-        teacher.eval()
-        # 冻结教师模型参数
-        for param in teacher.parameters():
-            param.requires_grad = False
-        return teacher
 
     def forward_train(self,
                       img,
@@ -94,15 +80,16 @@ class KDOrientedRCNN(RotatedTwoStageDetector):
             teacher_x = self.teacher_model.extract_feat(img)
             teacher_proposal_list = self.teacher_model.rpn_head.simple_test_rpn(
                 teacher_x, img_metas)
-            
-            # To get teacher's logits, we need to run roi_head forward
-            # We need to assign proposals to gt bboxes for teacher to get features for gt bboxes
+
+            # Obtain sampling results to extract teacher RoI features aligned with positives
             sampling_results = []
-            for i in range(len(img_metas)):
-                assign_result = self.student_model.roi_head.bbox_assigner.assign(
-                    teacher_proposal_list[i], gt_bboxes[i], gt_bboxes_ignore[i] if gt_bboxes_ignore else None,
-                    gt_labels[i])
-                sampling_result = self.student_model.roi_head.bbox_sampler.sample(
+            num_imgs = len(img_metas)
+            if gt_bboxes_ignore is None:
+                gt_bboxes_ignore = [None] * num_imgs
+            for i in range(num_imgs):
+                assign_result = self.roi_head.bbox_assigner.assign(
+                    teacher_proposal_list[i], gt_bboxes[i], gt_bboxes_ignore[i], gt_labels[i])
+                sampling_result = self.roi_head.bbox_sampler.sample(
                     assign_result,
                     teacher_proposal_list[i],
                     gt_bboxes[i],
@@ -110,23 +97,27 @@ class KDOrientedRCNN(RotatedTwoStageDetector):
                     feats=[lvl_feat[i][None] for lvl_feat in teacher_x])
                 sampling_results.append(sampling_result)
 
-            if len(sampling_results) > 0 and len(sampling_results[0].pos_bboxes) > 0:
+            # Convert positive bboxes to RoIs (adds batch indices) before ROI extractor
+            # Use all sampled bboxes (pos + neg) to align with student's classification logits
+            if sampling_results and any(res.bboxes.numel() > 0 for res in sampling_results):
+                sampled_bboxes_list = [res.bboxes for res in sampling_results]
+                rois = rbbox2roi(sampled_bboxes_list)  # shape (k, 6): [batch_ind, cx, cy, w, h, angle]
                 teacher_roi_feats = self.teacher_model.roi_head.bbox_roi_extractor(
                     teacher_x[:self.teacher_model.roi_head.bbox_roi_extractor.num_inputs],
-                    torch.cat([res.pos_bboxes for res in sampling_results]))
+                    rois)
                 teacher_cls_score, _ = self.teacher_model.roi_head.bbox_head(teacher_roi_feats)
 
 
         # Student forward
-        x = self.student_model.extract_feat(img)
+        x = self.extract_feat(img)
 
         losses = dict()
 
         # RPN forward and loss
-        if self.student_model.with_rpn:
-            proposal_cfg = self.student_model.train_cfg.get('rpn_proposal',
-                                            self.student_model.test_cfg.rpn)
-            rpn_losses, proposal_list = self.student_model.rpn_head.forward_train(
+        if self.with_rpn:
+            proposal_cfg = self.train_cfg.get('rpn_proposal',
+                                            self.test_cfg.rpn)
+            rpn_losses, proposal_list = self.rpn_head.forward_train(
                 x,
                 img_metas,
                 gt_bboxes,
@@ -138,7 +129,7 @@ class KDOrientedRCNN(RotatedTwoStageDetector):
         else:
             proposal_list = proposals
 
-        roi_losses = self.student_model.roi_head.forward_train(x, img_metas, proposal_list,
+        roi_losses = self.roi_head.forward_train(x, img_metas, proposal_list,
                                                  gt_bboxes, gt_labels,
                                                  gt_bboxes_ignore, gt_masks,
                                                  teacher_cls_score=teacher_cls_score,
@@ -148,21 +139,17 @@ class KDOrientedRCNN(RotatedTwoStageDetector):
         return losses
 
     def simple_test(self, img, img_metas, proposals=None, rescale=False):
-        """Test without augmentation."""
-        return self.student_model.simple_test(img, img_metas, proposals, rescale)
+        """Test without augmentation (delegate to parent)."""
+        return super().simple_test(img, img_metas, proposals, rescale)
 
     def aug_test(self, imgs, img_metas, **kwargs):
-        """Test with augmentations.
-
-        If specified, this function tests an image with augmentations and then
-        merges the results by calling `self.merge_aug_results`.
-        """
-        return self.student_model.aug_test(imgs, img_metas, **kwargs)
+        """Test with augmentations (delegate to parent)."""
+        return super().aug_test(imgs, img_metas, **kwargs)
 
     @property
     def with_rpn(self):
-        return self.student_model.with_rpn
+        return super().with_rpn
 
     @property
     def with_roi_head(self):
-        return self.student_model.with_roi_head
+        return super().with_roi_head

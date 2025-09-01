@@ -36,7 +36,8 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
                       gt_labels,
                       gt_bboxes_ignore=None,
                       gt_masks=None,
-                      teacher_cls_score=None):
+                      teacher_cls_score=None,
+                      kd_weight=1.0):
         """
         Args:
             x (list[Tensor]): list of multi-level img features.
@@ -93,6 +94,20 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
                                                     img_metas,
                                                     teacher_cls_score=teacher_cls_score)
             losses.update(bbox_results['loss_bbox'])
+
+            # Knowledge distillation (classification logits)
+            if teacher_cls_score is not None and 'cls_score' in bbox_results:
+                # Align shapes: student cls_score (N, C), teacher (M, C)
+                student_cls = bbox_results['cls_score']
+                if student_cls.shape[0] == teacher_cls_score.shape[0] and student_cls.shape[1] == teacher_cls_score.shape[1]:
+                    # KLDiv with temperature=1
+                    student_log_prob = torch.log_softmax(student_cls, dim=1)
+                    teacher_prob = torch.softmax(teacher_cls_score.detach(), dim=1)
+                    kd_loss = torch.nn.functional.kl_div(student_log_prob, teacher_prob, reduction='batchmean')
+                    losses['loss_kd_cls'] = kd_loss * kd_weight
+                else:
+                    # Shape mismatch; skip KD to avoid crash
+                    pass
 
         return losses
 
