@@ -3,7 +3,7 @@ _base_ = ['../lsknet/lsk_s_fpn_1x_dota_le90.py']
 angle_version = 'le90'
 
 # 教师模型权重路径（需根据实际位置修改）
-teacher_ckpt = 'checkpoints/lsk_s_fpn_1x_dota_le90_structure_pruned_tea.pth'
+teacher_ckpt = 'work_dirs/lsk_structured_s_fpn_1x_dota_le90/latest.pth'
 
 # 1. 定义教师模型（与 lsk_s 基础配置一致）
 teacher_config = dict(

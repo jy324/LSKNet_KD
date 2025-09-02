@@ -3,7 +3,7 @@ _base_ = ['../lsknet/lsk_s_fpn_1x_dota_le90.py']
 angle_version = 'le90'
 
 # 教师模型权重路径（需根据实际位置修改）
-teacher_ckpt = 'checkpoints/lsk_s_fpn_1x_dota_le90_structure_pruned_tea.pth'
+teacher_ckpt = 'work_dirs/lsk_random_s_fpn_1x_dota_le90/latest.pth'
 
 # 1. 定义教师模型（与 lsk_s 基础配置一致）
 teacher_config = dict(
@@ -14,7 +14,7 @@ teacher_config = dict(
         drop_rate=0.1,
         drop_path_rate=0.1,
         depths=[2, 2, 4, 2],
-        init_cfg=dict(type='Pretrained', checkpoint='./data/pretrained/lsk_s_backbone_structured_pruned.pth'),
+        init_cfg=dict(type='Pretrained', checkpoint='./data/pretrained/lsk_s_backbone_random_pruned.pth'),
         norm_cfg=dict(type='SyncBN', requires_grad=True)),
     neck=dict(
         type='FPN',
@@ -108,23 +108,16 @@ student_config = dict(
     test_cfg=teacher_config['test_cfg']
 )
 
+# 3. KD 框架（两阶段），符合 KDOrientedRCNN 要求：提供 teacher_config 和 student
 model = dict(
     type='KDOrientedRCNN',
-    teacher_config=teacher_config,
+    teacher_config='configs/lsknet/lsk_s_fpn_1x_dota_le90.py',
     teacher_ckpt=teacher_ckpt,
-    student_config=_base_.model,
-    distill_cfg=[
-        dict(
-            student_module='roi_head.bbox_head.fc_cls',
-            teacher_module='roi_head.bbox_head.fc_cls',
-            losses=dict(
-                loss_kd_cls=dict(
-                    type='KnowledgeDistillationKLDivLoss',
-                    T=10,
-                    loss_weight=0.5)
-            )
-        )
-    ]
+    output_feature=False,
+    backbone=teacher_config['backbone'],
+    neck=teacher_config['neck'],
+    rpn_head=teacher_config['rpn_head'],
+    roi_head=teacher_config['roi_head'],
 )
 
 optimizer = dict(_delete_=True, type='AdamW', lr=0.0001, betas=(0.9, 0.999), weight_decay=0.05)
