@@ -63,7 +63,7 @@ class BalancedDOTADataset(DOTADataset):
 
         if self.balance_mode == 'random':
             selected_idx = sorted(random.sample(range(total), target))
-        else:  # class-balanced image sampling
+        elif self.balance_mode == 'class':  # class-balanced image sampling
             # Collect per-image class sets
             img_classes: List[Set[int]] = []
             for info in self.data_infos:

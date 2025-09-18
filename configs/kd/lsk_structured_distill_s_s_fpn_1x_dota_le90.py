@@ -1,4 +1,7 @@
-_base_ = ['../lsknet/lsk_s_fpn_1x_dota_le90.py']
+_base_ = [
+    '../_base_/datasets/dotav1.py', '../_base_/schedules/schedule_1x.py',
+    '../_base_/default_runtime.py'
+]
 
 angle_version = 'le90'
 
@@ -120,9 +123,45 @@ model = dict(
     roi_head=teacher_config['roi_head'],
 )
 
-optimizer = dict(_delete_=True, type='AdamW', lr=0.0001, betas=(0.9, 0.999), weight_decay=0.05)
-
-
-# 5. 避免未使用参数导致的 DDP 报错（教师模型冻结）
+# 4. DDP 设置
 find_unused_parameters = True
 
+
+
+img_norm_cfg = dict(
+    mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', with_bbox=True),
+    dict(type='RResize', img_scale=(1024, 1024)),
+    dict(
+        type='RRandomFlip',
+        flip_ratio=[0.25, 0.25, 0.25],
+        direction=['horizontal', 'vertical', 'diagonal'],
+        version=angle_version),
+    dict(
+        type='PolyRandomRotate',
+        rotate_ratio=0.5,
+        angles_range=180,
+        auto_bound=False,
+        rect_classes=[9, 11],
+        version=angle_version),
+    dict(type='Normalize', **img_norm_cfg),
+    dict(type='Pad', size_divisor=32),
+    dict(type='DefaultFormatBundle'),
+    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
+]
+
+data = dict(
+    samples_per_gpu=1,
+    workers_per_gpu=2,
+    train=dict(pipeline=train_pipeline, version=angle_version),
+    val=dict(version=angle_version),
+    test=dict(version=angle_version))
+
+optimizer = dict(
+    _delete_=True, # 强制整体替换一个字典
+    type='AdamW',
+    lr=0.0001, #/8*gpu_number,
+    betas=(0.9, 0.999),
+    weight_decay=0.05)
