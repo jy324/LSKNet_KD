@@ -68,7 +68,33 @@ model = dict(
                 target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
             reg_class_agnostic=True,
             loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
-            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0)))
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0))),
+        train_cfg=dict(
+        rpn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner', pos_iou_thr=0.7, neg_iou_thr=0.3, min_pos_iou=0.3,
+                match_low_quality=True, gpu_assign_thr=800, ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler', num=256, pos_fraction=0.5, neg_pos_ub=-1, add_gt_as_proposals=False),
+            allowed_border=0,
+            pos_weight=-1,
+            debug=False),
+        rpn_proposal=dict(
+            nms_pre=2000, max_per_img=2000, nms=dict(type='nms', iou_threshold=0.8), min_bbox_size=0),
+        rcnn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner', pos_iou_thr=0.5, neg_iou_thr=0.5, min_pos_iou=0.5,
+                match_low_quality=False, iou_calculator=dict(type='RBboxOverlaps2D'), gpu_assign_thr=800,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RRandomSampler', num=512, pos_fraction=0.25, neg_pos_ub=-1, add_gt_as_proposals=True),
+            pos_weight=-1, debug=False)),
+    test_cfg=dict(
+        rpn=dict(
+            nms_pre=2000, max_per_img=2000, nms=dict(type='nms', iou_threshold=0.8), min_bbox_size=0),
+        rcnn=dict(
+            nms_pre=2000, min_bbox_size=0, score_thr=0.05, nms=dict(iou_thr=0.1), max_per_img=2000))
+
 )
 
 optimizer = dict(_delete_=True, type='AdamW', lr=0.0001, betas=(0.9, 0.999), weight_decay=0.05)

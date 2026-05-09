@@ -35,9 +35,7 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
                       gt_bboxes,
                       gt_labels,
                       gt_bboxes_ignore=None,
-                      gt_masks=None,
-                      teacher_cls_score=None,
-                      kd_weight=1.0):
+                      gt_masks=None):
         """
         Args:
             x (list[Tensor]): list of multi-level img features.
@@ -91,28 +89,13 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
         if self.with_bbox:
             bbox_results = self._bbox_forward_train(x, sampling_results,
                                                     gt_bboxes, gt_labels,
-                                                    img_metas,
-                                                    teacher_cls_score=teacher_cls_score)
+                                                    img_metas)
             losses.update(bbox_results['loss_bbox'])
-
-            # Knowledge distillation (classification logits)
-            if teacher_cls_score is not None and 'cls_score' in bbox_results:
-                # Align shapes: student cls_score (N, C), teacher (M, C)
-                student_cls = bbox_results['cls_score']
-                if student_cls.shape[0] == teacher_cls_score.shape[0] and student_cls.shape[1] == teacher_cls_score.shape[1]:
-                    # KLDiv with temperature=1
-                    student_log_prob = torch.log_softmax(student_cls, dim=1)
-                    teacher_prob = torch.softmax(teacher_cls_score.detach(), dim=1)
-                    kd_loss = torch.nn.functional.kl_div(student_log_prob, teacher_prob, reduction='batchmean')
-                    losses['loss_kd_cls'] = kd_loss * kd_weight
-                else:
-                    # 即便形状不匹配也写入一个 0 的占位项，保证所有 rank 至少有 'loss_kd_cls'
-                    losses['loss_kd_cls'] = student_cls.sum() * 0
 
         return losses
 
     def _bbox_forward_train(self, x, sampling_results, gt_bboxes, gt_labels,
-                            img_metas, teacher_cls_score=None):
+                            img_metas):
         """Run forward function and calculate loss for box head in training.
 
         Args:
@@ -130,12 +113,13 @@ class OrientedStandardRoIHead(RotatedStandardRoIHead):
         """
         rois = rbbox2roi([res.bboxes for res in sampling_results])
         bbox_results = self._bbox_forward(x, rois)
+
         bbox_targets = self.bbox_head.get_targets(sampling_results, gt_bboxes,
                                                   gt_labels, self.train_cfg)
         loss_bbox = self.bbox_head.loss(bbox_results['cls_score'],
                                         bbox_results['bbox_pred'], rois,
-                                        *bbox_targets,
-                                        teacher_cls_score=teacher_cls_score)
+                                        *bbox_targets)
+
         bbox_results.update(loss_bbox=loss_bbox)
         return bbox_results
 

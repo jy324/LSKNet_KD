@@ -4,20 +4,23 @@ _base_ = [
 ]
 
 angle_version = 'le90'
-
-# 教师模型权重路径（需根据实际位置修改）
+teacher_config = 'configs/lsknet/lsk_s_fpn_1x_dota_le90.py'
 teacher_ckpt = 'work_dirs/lsk_structured_s_fpn_1x_dota_le90/latest.pth'
+student_backbone = './data/pretrained/lsk_s_backbone_structured_pruned.pth'
 
-# 1. 定义教师模型（与 lsk_s 基础配置一致）
-teacher_config = dict(
-    type='OrientedRCNN',
+# 3. KD 框架（两阶段），符合 KDOrientedRCNN 要求：提供 teacher_config 和 student
+model = dict(
+    type='KDOrientedRCNN',
+    teacher_config=teacher_config,
+    teacher_ckpt=teacher_ckpt,
+    output_feature=False,
     backbone=dict(
         type='LSKNet',
         embed_dims=[64, 128, 320, 512],
         drop_rate=0.1,
         drop_path_rate=0.1,
         depths=[2, 2, 4, 2],
-        init_cfg=dict(type='Pretrained', checkpoint='./data/pretrained/lsk_s_backbone_structured_pruned.pth'),
+        init_cfg=dict(type='Pretrained', checkpoint=student_backbone),
         norm_cfg=dict(type='SyncBN', requires_grad=True)),
     neck=dict(
         type='FPN',
@@ -42,7 +45,8 @@ teacher_config = dict(
         loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
         loss_bbox=dict(type='SmoothL1Loss', beta=0.1111111111111111, loss_weight=1.0)),
     roi_head=dict(
-        type='OrientedStandardRoIHead',
+        type='DistillOrientedStandardRoIHead',
+        kd_cfg=dict(enable=True, type='kl', T=4.0, weight=0.5, align='truncate', detach_teacher=True, positive_only=False),
         bbox_roi_extractor=dict(
             type='RotatedSingleRoIExtractor',
             roi_layer=dict(
@@ -66,7 +70,7 @@ teacher_config = dict(
             reg_class_agnostic=True,
             loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
             loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0))),
-    train_cfg=dict(
+        train_cfg=dict(
         rpn=dict(
             assigner=dict(
                 type='MaxIoUAssigner', pos_iou_thr=0.7, neg_iou_thr=0.3, min_pos_iou=0.3,
@@ -91,77 +95,11 @@ teacher_config = dict(
             nms_pre=2000, max_per_img=2000, nms=dict(type='nms', iou_threshold=0.8), min_bbox_size=0),
         rcnn=dict(
             nms_pre=2000, min_bbox_size=0, score_thr=0.05, nms=dict(iou_thr=0.1), max_per_img=2000))
+
 )
 
-# 2. 学生模型同样使用 lsk_s 结构（可根据需要单独设置 init_cfg 或去掉以从头学习）
-student_config = dict(
-    type='OrientedRCNN',
-    backbone=dict(
-        type='LSKNet',
-        embed_dims=[64, 128, 320, 512],
-        drop_rate=0.1,
-        drop_path_rate=0.1,
-        depths=[2, 2, 4, 2],
-        init_cfg=dict(type='Pretrained', checkpoint='./data/pretrained/lsk_s_backbone.pth'),
-        norm_cfg=dict(type='SyncBN', requires_grad=True)),
-    neck=teacher_config['neck'],  # 直接复用
-    rpn_head=teacher_config['rpn_head'],
-    roi_head=teacher_config['roi_head'],
-    train_cfg=teacher_config['train_cfg'],
-    test_cfg=teacher_config['test_cfg']
-)
+optimizer = dict(_delete_=True, type='AdamW', lr=0.0001, betas=(0.9, 0.999), weight_decay=0.05)
 
-# 3. KD 框架（两阶段），符合 KDOrientedRCNN 要求：提供 teacher_config 和 student
-model = dict(
-    type='KDOrientedRCNN',
-    teacher_config='configs/lsknet/lsk_s_fpn_1x_dota_le90.py',
-    teacher_ckpt=teacher_ckpt,
-    output_feature=False,
-    backbone=teacher_config['backbone'],
-    neck=teacher_config['neck'],
-    rpn_head=teacher_config['rpn_head'],
-    roi_head=teacher_config['roi_head'],
-)
 
-# 4. DDP 设置
+# 5. 避免未使用参数导致的 DDP 报错（教师模型冻结）
 find_unused_parameters = True
-
-
-
-img_norm_cfg = dict(
-    mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
-train_pipeline = [
-    dict(type='LoadImageFromFile'),
-    dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='RResize', img_scale=(1024, 1024)),
-    dict(
-        type='RRandomFlip',
-        flip_ratio=[0.25, 0.25, 0.25],
-        direction=['horizontal', 'vertical', 'diagonal'],
-        version=angle_version),
-    dict(
-        type='PolyRandomRotate',
-        rotate_ratio=0.5,
-        angles_range=180,
-        auto_bound=False,
-        rect_classes=[9, 11],
-        version=angle_version),
-    dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size_divisor=32),
-    dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
-]
-
-data = dict(
-    samples_per_gpu=1,
-    workers_per_gpu=2,
-    train=dict(pipeline=train_pipeline, version=angle_version),
-    val=dict(version=angle_version),
-    test=dict(version=angle_version))
-
-optimizer = dict(
-    _delete_=True, # 强制整体替换一个字典
-    type='AdamW',
-    lr=0.0001, #/8*gpu_number,
-    betas=(0.9, 0.999),
-    weight_decay=0.05)
